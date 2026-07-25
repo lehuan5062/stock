@@ -171,11 +171,25 @@ def _print_sell_reminder(picks, *, mode: str) -> None:
 @click.option("--symbols", "-s", multiple=True, help="Specific tickers; default = full universe")
 @click.option("--full", is_flag=True, help="Re-fetch full history instead of incremental")
 @click.option("--limit", type=int, default=None, help="Cap symbol count (debug)")
-def update_data(symbols: tuple[str, ...], full: bool, limit: int | None) -> None:
+@click.option("--interactive", "-i", is_flag=True,
+              help="Prompt for symbol scope and full-refetch instead of reading flags.")
+def update_data(symbols: tuple[str, ...], full: bool, limit: int | None,
+                interactive: bool) -> None:
     """Refresh the OHLCV parquet cache from vnstock."""
     from .data.fetcher import update_many
     from .data.intro import introduce
     from .data.universe import filter_exchanges, load_universe
+
+    if interactive:
+        # Prompting lives here rather than in update_data.bat: batch's
+        # `set /p` + delayed expansion + parenthesized blocks kill the whole
+        # script (and its window) on a parse error, so an empty answer used to
+        # close the terminal with no visible cause.
+        raw = click.prompt("Symbols to fetch, comma-separated (empty = full universe)",
+                           default="", show_default=False)
+        symbols = tuple(s.strip().upper() for s in raw.split(",") if s.strip())
+        full = click.confirm("Force full history re-fetch instead of incremental?",
+                             default=False)
 
     introduce()
 

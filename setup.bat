@@ -1,10 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
-title Vietnamese Rebound Predictor - Setup
+title Vietnamese Stock Predictor - Setup
 cd /d "%~dp0"
 
 echo.
-echo === Vietnamese Rebound Stock Predictor - Setup ===
+echo === Vietnamese Stock Predictor - Setup ===
 echo Creates/updates .venv and installs all dependencies.
 echo.
 
@@ -65,5 +65,6 @@ echo.
 if not exist ".env" if exist ".env.example" echo Optional: copy .env.example to .env and fill in API keys for LLM modes.
 
 echo.
-echo === Setup complete. Run predict_base.bat to get started. ===
+echo === Setup complete. Paste agent_prompt.md into your LLM agent to start, ===
+echo === or run update_data.bat first to pre-fill the cache. ===
 pause

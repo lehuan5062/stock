@@ -30,10 +30,12 @@ summary, no menu, no waiting for "go". Pause only if the venv is unavailable.
 
 ## Step 0 — Collect parameters with AskUserQuestion
 
-Two batched calls. For every question, put the **default first** and append
-"(Recommended)" to its label. Do **not** add an "Other" option — the tool adds
-one automatically; that auto-added "Other" is how the user types free-form
-values. The run always covers the whole HOSE/HNX/UPCOM universe.
+Two batched calls (plus a conditional third batch in Step 0a, only if the
+user opts into a fresh fetch). For every question, put the **default first**
+and append "(Recommended)" to its label. Do **not** add an "Other" option —
+the tool adds one automatically; that auto-added "Other" is how the user
+types free-form values. The run always covers the whole HOSE/HNX/UPCOM
+universe.
 
 **Batch 1 (4 questions):**
 
@@ -44,12 +46,54 @@ values. The run always covers the whole HOSE/HNX/UPCOM universe.
 | HOSE-only? | `No — all exchanges (Recommended)` · `Yes — HOSE only` | Yes → add `--hose-only` |
 | Include ETFs? | `Yes — include ETFs (Recommended)` · `No — exclude ETFs` (picks JSON gets `_noETF` suffix) | No → add `--no-etfs` |
 
-**Batch 2 (2 questions):**
+**Batch 2 (3 questions):**
 
 | Question | Options (default first) | CLI effect |
 |---|---|---|
+| Refresh the data cache before this run? | `No — use cached data only (Recommended)` · `Yes — fetch fresh data first (opens a monitorable terminal window)` | see Step 0a below |
 | Warm-only? | `yes — smart lazy fetch (Recommended)` · `always — pure offline` · `no — force re-fetch (slow)` | `--warm-only <value>` |
 | Exclude tickers? | Exactly two literal options (the tool rejects 1-option questions — never drop the second one): `None (Recommended)` · `Exclude some — pick "Other" and type e.g. ACB,HPG`. The free-form list itself arrives via the auto-added "Other"; if the user selects the second option without typing tickers, follow up asking for the comma-separated list. Per-session only, never written to config.yaml | `--exclude TICKER` per ticker, or one comma-separated value; omit when None |
+
+This session may be run several times a day — the "refresh the data cache"
+question exists so a fresh KBS/VCI fetch never fires unless the user
+explicitly asks for it. When the answer is "No", the Warm-only question above
+is used exactly as asked (its own `always` option is the user's separate
+lever for pure-offline vs. lazy-fetch on an already-cached run). When the
+answer is "Yes", go to **Step 0a** below instead of using the Warm-only
+answer as given — the cache is about to be refreshed directly.
+
+### Step 0a — Fresh fetch, if requested
+
+Only when "Refresh the data cache" was answered "Yes":
+
+1. Ask two follow-up questions (own batch): `Symbols to fetch? (empty = full
+   universe)` (free text via the auto-added "Other", comma-separated) and
+   `Force full history re-fetch instead of incremental? y/n [n]`. These are
+   the same two prompts `update_data.bat` asks interactively, asked here
+   instead since the CLI is about to be invoked directly and
+   non-interactively — don't run `update_data.bat` itself, run the
+   equivalent CLI command in a new window (below).
+2. Build the flags: comma list → repeated `-s TICKER`, empty → no `-s` flags
+   (full universe); `y` → `--full`.
+3. **Spawn a new, separate, persistent terminal window** running the fetch,
+   so the user can watch KBS/VCI source selection, 429/cooldown, and
+   progress lines live instead of it being buried in your own tool output.
+   PowerShell example (keeps the window open after the command finishes via
+   `-NoExit`):
+   ```
+   Start-Process powershell -ArgumentList '-NoExit','-Command','.venv\Scripts\python.exe -m stockpredict.cli update-data <flags>'
+   ```
+   This is **not** the "headless only — never launch a GUI browser" rule in
+   Step 3 below — that rule is scoped to browser/URL navigation tools; the
+   named commands there (`Start-Process`, `start`, etc.) are banned only
+   *when the target is an http(s) URL*. Opening a terminal window to run a
+   local Python CLI command is a distinct, permitted action.
+4. Tell the user you've opened the fetch window and ask them to say when
+   it's finished (watch for the `done. ok=X err=Y` line) before you continue
+   — don't guess a wait time.
+5. Once confirmed done, use `--warm-only always` (pure offline) on every
+   `run` command in Step 1 this session — the cache was just freshly
+   fetched, so `run` itself must not fetch again.
 
 Then summarise the chosen parameters back in one line and start. If the
 dividend mode was selected, mention that `update-dividends` may need to run

@@ -208,6 +208,7 @@ reasons over them itself, per run, informed by `agent_prompt.md`'s rubric.
 ```
 <repo root>/
   setup.bat                double-click: create/update .venv + install dependencies
+  update_data.bat          double-click: interactive OHLCV cache pre-fill (KBS/VCI), stays open on exit
   agent_prompt.md          paste into an LLM coding-agent session to run the pipeline
   config.yaml              mechanical-gate thresholds + data-plumbing knobs
 

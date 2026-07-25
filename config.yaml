@@ -26,7 +26,7 @@ data:
   # 60/min matches vnstock's Community tier. Env override: STOCKPREDICT_API_PER_MIN=10
   api_per_min: 60          # fixed calls/min ceiling for any source without an override
   api_per_min_overrides:   # per-source fixed rates
-    VCI: 63                # VCI 429s aggressively; keep it conservative
+    VCI: 62                # VCI 429s aggressively; keep it conservative
     KBS: 170               # KBS has been the most reliable source so far
   # Fixed per-source cooldown (seconds) applied after ANY fetch failure on
   # that source — a confirmed 429, or anything else (timeout, reset,
