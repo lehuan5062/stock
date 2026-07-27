@@ -20,9 +20,13 @@ several in a session:
 
 | Mode | Horizon | What you predict | Exit |
 |---|---|---|---|
-| **momentum** | short-term trend-following | `N_days` (to profit) + `P` (profit) | buy at close, target = `close×(1+P)`, no stop, hold until target |
-| **rebound** | mean-reversion bounce | `N_days` + `P` | same as momentum |
-| **dividend** | long-term hold | `expected_hold_years` + `confidence` | buy at close, no target, no stop — a hold |
+| **momentum** | **short term** — trend-following | `N_days` (to profit) + `P` (profit) | buy at close, target = `close×(1+P)`, no stop, hold until target |
+| **rebound** | **medium term** — mean-reversion bounce | `N_days` + `P` | same as momentum |
+| **dividend** | **long term** — income hold | `expected_hold_years` + `confidence` | buy at close, no target, no stop — a hold |
+
+The three modes are **not** better-or-worse than one another — they are
+different holding horizons. Which one to run is the user's call; never
+recommend one.
 
 **START NOW.** Unless the user's message explicitly asks for something else,
 your **first action is an `AskUserQuestion` call** with batch 1 below. No
@@ -31,40 +35,45 @@ summary, no menu, no waiting for "go". Pause only if the venv is unavailable.
 ## Step 0 — Collect parameters with AskUserQuestion
 
 Two batched calls (plus a conditional third batch in Step 0a, only if the
-user opts into a fresh fetch). For every question, put the **default first**
-and append "(Recommended)" to its label. Do **not** add an "Other" option —
-the tool adds one automatically; that auto-added "Other" is how the user
-types free-form values. The run always covers the whole HOSE/HNX/UPCOM
-universe.
+user asks for a full refresh). For the **operational** questions, put the
+**default first** and append "(Recommended)" to its label. **Exception — the
+mode question:** it has no default and no recommendation. Which horizon to
+trade is the user's decision, not yours; present the three modes neutrally in
+horizon order and let them choose. Do **not** add an "Other" option — the
+tool adds one automatically; that auto-added "Other" is how the user types
+free-form values. The run always covers the whole HOSE/HNX/UPCOM universe.
 
 **Batch 1 (4 questions):**
 
-| Question | Options (default first) | CLI effect |
+| Question | Options | CLI effect |
 |---|---|---|
-| Mode(s)? (multi-select) | `Rebound (Recommended)` · `Momentum` · `Dividend` — pick one or more; if more than one, you'll do a cross-mode comparison at the end | `run --mode <mode>` per selected mode |
+| Mode(s)? (multi-select, **no default — the user picks**) | `Momentum — short term` · `Rebound — medium term` · `Dividend — long term` — pick one or more; if more than one, you'll do a cross-mode comparison at the end | `run --mode <mode>` per selected mode |
 | Picks (per mode)? | `1 (Recommended)` · `3` · `5` · Other = any integer ≥ 1 | `--picks <N>` |
 | HOSE-only? | `No — all exchanges (Recommended)` · `Yes — HOSE only` | Yes → add `--hose-only` |
 | Include ETFs? | `Yes — include ETFs (Recommended)` · `No — exclude ETFs` (picks JSON gets `_noETF` suffix) | No → add `--no-etfs` |
 
-**Batch 2 (3 questions):**
+**Batch 2 (2 questions):**
 
 | Question | Options (default first) | CLI effect |
 |---|---|---|
-| Refresh the data cache before this run? | `No — use cached data only (Recommended)` · `Yes — fetch fresh data first (opens a monitorable terminal window)` | see Step 0a below |
-| Warm-only? | `yes — smart lazy fetch (Recommended)` · `always — pure offline` · `no — force re-fetch (slow)` | `--warm-only <value>` |
+| Data freshness? | `Lazy fetch — only stale + cold (Recommended)` · `Cached data only — no API calls` · `Full refresh first — opens a terminal window you can watch` | `--warm-only yes` · `--warm-only always` · Step 0a, then `--warm-only always` |
 | Exclude tickers? | Exactly two literal options (the tool rejects 1-option questions — never drop the second one): `None (Recommended)` · `Exclude some — pick "Other" and type e.g. ACB,HPG`. The free-form list itself arrives via the auto-added "Other"; if the user selects the second option without typing tickers, follow up asking for the comma-separated list. Per-session only, never written to config.yaml | `--exclude TICKER` per ticker, or one comma-separated value; omit when None |
 
-This session may be run several times a day — the "refresh the data cache"
-question exists so a fresh KBS/VCI fetch never fires unless the user
-explicitly asks for it. When the answer is "No", the Warm-only question above
-is used exactly as asked (its own `always` option is the user's separate
-lever for pure-offline vs. lazy-fetch on an already-cached run). When the
-answer is "Yes", go to **Step 0a** below instead of using the Warm-only
-answer as given — the cache is about to be refreshed directly.
+This session may be run several times a day, so data freshness is **one**
+explicit choice, not two overlapping ones. What each option actually does:
 
-### Step 0a — Fresh fetch, if requested
+- **Lazy fetch** — `run` fetches only symbols that are stale or missing. On a
+  repeat run the same day that is usually zero API calls.
+- **Cached data only** — no API calls at all. Symbols with no cached parquet
+  are dropped from the universe, so a brand-new listing won't appear until a
+  refresh.
+- **Full refresh first** — the only option that fetches in a window the user
+  can watch (see Step 0a). Everything else fetches inline, buried in your
+  tool output.
 
-Only when "Refresh the data cache" was answered "Yes":
+### Step 0a — Full refresh, if requested
+
+Only when "Data freshness" was answered `Full refresh first`:
 
 1. Ask two follow-up questions (own batch): `Symbols to fetch? (empty = full
    universe)` (free text via the auto-added "Other", comma-separated) and

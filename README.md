@@ -11,9 +11,12 @@ the picking, ranking, and pricing, driven by [`agent_prompt.md`](agent_prompt.md
 
 | Mode | Horizon | Agent predicts | Exit |
 | ---- | ------- | --------------- | ---- |
-| **momentum** | short-term trend-following | `N_days` + `P` (profit) | buy at close, target = `close×(1+P)`, no stop, hold until target |
-| **rebound** | mean-reversion bounce | `N_days` + `P` | same as momentum |
-| **dividend** | long-term hold | `expected_hold_years` + `confidence` | buy at close, no target, no stop — a hold |
+| **momentum** | **short term** — trend-following | `N_days` + `P` (profit) | buy at close, target = `close×(1+P)`, no stop, hold until target |
+| **rebound** | **medium term** — mean-reversion bounce | `N_days` + `P` | same as momentum |
+| **dividend** | **long term** — income hold | `expected_hold_years` + `confidence` | buy at close, no target, no stop — a hold |
+
+The modes aren't better-or-worse than one another — they're different holding
+horizons, so which to run is your call. The agent never recommends one.
 
 Momentum and rebound share one objective (`score = P/N`, profit per day
 held) and one trade shape (buy at close, flexible exit, no stop-loss —
@@ -34,9 +37,10 @@ agent gives a final cross-mode recommendation.
 1. Open a capable LLM coding-agent session (Claude Code, Cowork, or
    equivalent).
 2. Paste the contents of [`agent_prompt.md`](agent_prompt.md) into the chat.
-3. The agent asks for mode(s) / picks / hose-only / etfs / exclude /
-   warm-only, then drives the whole pipeline: `run` → research → fill the
-   plan → `finalize`.
+3. The agent asks for mode(s) / picks / hose-only / etfs / data freshness /
+   exclude, then drives the whole pipeline: `run` → research → fill the
+   plan → `finalize`. Picking "full refresh" opens the fetch in its own
+   terminal window so you can watch KBS/VCI progress live.
 
 ### B. CLI (advanced / scripting)
 
