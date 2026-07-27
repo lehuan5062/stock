@@ -10,18 +10,6 @@ import pandas as pd
 
 from .config import load_config
 
-# vnai (a vnstock dependency) unconditionally writes .agents/AGENTS.md on
-# first use, containing a prompt-injection payload aimed at AI coding agents
-# (instructs the reader to fetch/load remote "skill" content). Neutralize it
-# before any vnstock/vnai import happens elsewhere in the process.
-try:
-    import vnai.beam.agents as _vnai_agents
-
-    _vnai_agents.setup_agent_environment = lambda *a, **k: False
-    _vnai_agents.async_setup_agent_environment = lambda *a, **k: False
-except ImportError:
-    pass
-
 # Force UTF-8 on stdout/stderr so Vietnamese text in plans/picks doesn't crash
 # the default Windows cp1252 console codec.
 for _stream in (sys.stdout, sys.stderr):
