@@ -1,11 +1,33 @@
 """Parquet cache for OHLCV. One file per ticker, indexed by date."""
 from __future__ import annotations
 
+import csv
+import datetime as dt
 from pathlib import Path
 
 import pandas as pd
 
 from ..config import cache_dir
+
+_CORP_ACTION_LOG_COLUMNS = ["timestamp", "symbol", "message", "healed"]
+
+
+def _corp_action_log_path() -> Path:
+    return cache_dir() / "corp_action_events.csv"
+
+
+def log_corp_action_event(symbol: str, message: str, healed: bool) -> None:
+    """Append one row to the corp-action-guard event log so recurring or
+    non-healing violations (a signal of a real bug rather than an expected
+    corp-action artifact) can be spotted across runs instead of relying on
+    scrollback of the console warning."""
+    path = _corp_action_log_path()
+    is_new = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(_CORP_ACTION_LOG_COLUMNS)
+        writer.writerow([dt.datetime.now().isoformat(timespec="seconds"), symbol, message, healed])
 
 
 class SuspectedCorporateActionArtifact(Exception):

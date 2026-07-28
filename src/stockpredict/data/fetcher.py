@@ -14,7 +14,8 @@ from typing import Iterable
 import pandas as pd
 
 from ..config import load_config
-from .cache import SuspectedCorporateActionArtifact, get_watermark, merge_ohlcv, read_ohlcv, set_watermark
+from .cache import (SuspectedCorporateActionArtifact, get_watermark, log_corp_action_event,
+                    merge_ohlcv, read_ohlcv, set_watermark)
 
 
 def _today_str() -> str:
@@ -672,9 +673,16 @@ def update_symbol(symbol: str, full: bool = False,
             # Already doing a full refetch (which replaces the whole history
             # via merge_ohlcv's own concat + keep="last" dedup) and STILL hit
             # an internal violation -- don't recurse forever, surface it.
+            log_corp_action_event(symbol, str(e), healed=False)
             raise
         _cprint(f"{symbol}: {e} -- forcing a full re-fetch to heal the cache", "yellow")
-        return update_symbol(symbol, full=True, source_order=source_order)
+        try:
+            result = update_symbol(symbol, full=True, source_order=source_order)
+        except SuspectedCorporateActionArtifact:
+            log_corp_action_event(symbol, str(e), healed=False)
+            raise
+        log_corp_action_event(symbol, str(e), healed=True)
+        return result
     # Stamp the watermark to the expected bar so a fetch returning empty
     # data (delisted, halted, broker has no newer bar) doesn't retrigger
     # next run. The watermark only blocks retries within the same expected-

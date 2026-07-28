@@ -27,7 +27,7 @@ data:
   api_per_min: 60          # fixed calls/min ceiling for any source without an override
   api_per_min_overrides:   # per-source fixed rates
     VCI: 62                # VCI 429s aggressively; keep it conservative
-    KBS: 180               # KBS has been the most reliable source so far
+    KBS: 190               # KBS has been the most reliable source so far
   # Fixed per-source cooldown (seconds) applied after ANY fetch failure on
   # that source — a confirmed 429, or anything else (timeout, reset,
   # transient outage); without SOME backoff on every failure a struggling
