@@ -75,6 +75,15 @@ _LEDGER_COLUMNS = [
     # How a rebound pick was closed: "recovery" | "" (open / not yet
     # resolved / legacy row). Filled by evaluate_pending.
     "exit_reason",
+    # Which ranking formula produced this row's ``rank``. The ledger keeps
+    # ``rank`` but NOT ``score``, so a mode that changes how it scores would
+    # otherwise silently mix two rank populations in one append-only file with
+    # nothing to tell them apart — and ``analyze.mode_compare`` would average
+    # two different strategies under one mode label. Modes that have never
+    # changed their formula leave this empty; empty also means "legacy row,
+    # pre-dating the stamp". Set by the mode's finalize (see
+    # ``modes.dividend.SCORE_FORMULA``).
+    "score_formula",
 ]
 
 
@@ -83,7 +92,7 @@ _LEDGER_COLUMNS = [
 _NEW_FLOAT_COLUMNS = ("t0_open", "t0_low", "t0_close", "entry_slippage",
                       "pred_low", "entry_limit_price",
                       "pred_days", "pred_profit", "pred_recovery_prob")
-_NEW_STRING_COLUMNS = ("dimensions_cited", "exit_reason")
+_NEW_STRING_COLUMNS = ("dimensions_cited", "exit_reason", "score_formula")
 # Boolean columns added in the low-prediction release. Default for legacy
 # rows: ``entry_limit_filled`` is False (no limit was placed); for
 # ``t0_evaluated`` the backfill is "True if evaluated else False" because
@@ -525,6 +534,9 @@ def record(picks: pd.DataFrame, mode: str, as_of: str | dt.date | None = None,
             "actual_exit_date": pd.NaT,
             "recovered_flag": False,
             "exit_reason": "",
+            # Ranking-formula version stamp (see _LEDGER_COLUMNS). Empty for
+            # modes that have never redefined their score.
+            "score_formula": str(r.get("score_formula", "") or ""),
         })
     add = pd.DataFrame(rows)
     df = _read()

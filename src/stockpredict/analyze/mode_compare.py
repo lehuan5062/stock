@@ -131,12 +131,22 @@ def _per_mode_stats(comp: pd.DataFrame) -> list[dict]:
     for mode, g in comp.groupby("mode"):
         stats = _agg(g["realized_return"])
         per_cell = g.groupby("cell")["realized_return"].mean()
+        # Which ranking formula(s) produced these rows. The ledger keeps `rank`
+        # but not `score`, so if a mode redefined its scoring mid-history this
+        # pooled row silently averages two different strategies. Surface that
+        # rather than hiding it — "" means a row predating the stamp.
+        if "score_formula" in g.columns:
+            formulas = sorted({str(v or "") for v in g["score_formula"]})
+        else:
+            formulas = [""]
         rows.append({
             "mode": str(mode),
             "label": _label(mode),
             "n_days": int(g["cell"].nunique()),
             **stats,
             "mean_per_day": float(per_cell.mean()) if len(per_cell) else float("nan"),
+            "score_formulas": formulas,
+            "mixed_formula": len(formulas) > 1,
         })
     rows.sort(key=lambda d: (d["mean_per_day"] if d["mean_per_day"] == d["mean_per_day"]
                              else -1e9), reverse=True)
@@ -239,14 +249,28 @@ def format_report(result: dict) -> str:
     lines.append("| method | days | picks | hit | mean/pick | median | mean/day |")
     lines.append("| ------ | ---- | ----- | --- | --------- | ------ | -------- |")
     for r in result["per_mode"]:
+        flag = " ⚠" if r.get("mixed_formula") else ""
         lines.append(
-            f"| {r['label']} | {r['n_days']} | {r['n_picks']} | "
+            f"| {r['label']}{flag} | {r['n_days']} | {r['n_picks']} | "
             f"{_rate(r['hit_rate'])} | {_pct(r['mean_return'])} | "
             f"{_pct(r['median_return'])} | {_pct(r['mean_per_day'])} |"
         )
     lines.append("")
     lines.append("`mean/day` weights each day equally (averages a day's picks "
                  "first, then across days) — the fairest single number.")
+    mixed = [r for r in result["per_mode"] if r.get("mixed_formula")]
+    if mixed:
+        lines.append("")
+        for r in mixed:
+            shown = ", ".join(f"`{f}`" if f else "`(pre-stamp)`"
+                              for f in r["score_formulas"])
+            lines.append(
+                f"⚠ **{r['label']} pools more than one ranking formula** "
+                f"({shown}). The ledger stores `rank` but not `score`, so these "
+                f"rows were ranked by different objectives and this pooled "
+                f"number blends two strategies. Segment by `score_formula` "
+                f"before drawing a conclusion."
+            )
     lines.append("")
 
     if result.get("pairwise"):

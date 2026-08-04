@@ -12,15 +12,16 @@ dividend pick is a hold, not a swing trade, so pricing is buy-at-close only
 from __future__ import annotations
 
 import datetime as dt
-import re
 from pathlib import Path
 
 import pandas as pd
 
 from ..config import reports_dir
-from ..data.dividends import dividend_summary
-from ..news.llm_plan_runner import (_extract_dimension_tags, _extract_findings_list,
-                                    _extract_step, _split_per_ticker_sections)
+from ..data.dividends import dividend_cache_path, dividend_summary
+from ..news.llm_plan_runner import (Column, ResultField, parse_num_cell,
+                                    fmt_comma, fmt_int, fmt_pct2, fmt_signed3,
+                                    fmt_symbol, fmt_text, fmt_type,
+                                    parse_results_table, render_universe_table)
 from ..news.sources import global_urls, vn_urls
 from ..pricing import add_dividend_price_suggestions
 from ..selector import eligible_universe
@@ -30,18 +31,61 @@ from .common import (default_n_picks, emit_universe_meta, read_candidates_sideca
 
 MODE = "dividend"
 
+# The dividend universe reference table. The income columns come from the
+# deterministic fetcher; the price/technical columns ride along on
+# ``eligible_universe`` and are shown so the agent can judge ENTRY quality —
+# a great payer bought at a stretched price is a poor hold. ``mom_5`` is
+# deliberately omitted: a 5-day move is noise over a multi-year holding period.
+_UNIVERSE_COLUMNS = (
+    Column("symbol", "symbol", fmt_symbol),
+    Column("organ_name", "company", fmt_text),
+    Column("close", "close", fmt_int),
+    Column("dividend_yield_ttm", "dividend_yield_ttm", fmt_pct2),
+    Column("years_paid_consecutive", "years_paid_consecutive", fmt_text),
+    Column("payout_trend", "payout_trend", fmt_text),
+    Column("last_ex_date", "last_ex_date", fmt_text),
+    Column("rsi_14", "rsi_14", fmt_int),
+    Column("mom_20", "mom_20", fmt_signed3),
+    Column("high_prox_20", "high_prox_20", fmt_signed3),
+    Column("adv_vnd_20", "adv_vnd_20", fmt_comma),
+    Column("instrument_type", "type", fmt_type),
+)
+
+
+_NO_DIVIDEND_SUMMARY = {
+    "dividend_yield_ttm": float("nan"),
+    "years_paid_consecutive": 0,
+    "last_ex_date": None,
+    "payout_trend": "unknown",
+    "n_dividend_events": 0,
+}
+
 
 def _enrich_with_dividend_data(universe: pd.DataFrame, on_date: dt.date) -> pd.DataFrame:
     """Merge in the deterministic dividend-history columns for every symbol in
     the eligible universe: ``dividend_yield_ttm``, ``years_paid_consecutive``,
-    ``last_ex_date``, ``payout_trend``, ``n_dividend_events``."""
+    ``last_ex_date``, ``payout_trend``, ``n_dividend_events``.
+
+    Reads the LOCAL parquet cache (``cache/dividends/<SYM>.parquet``) — no
+    network. Symbols with no cached file at all are short-circuited to the empty
+    summary instead of paying for a miss inside ``dividend_summary``, which is
+    most of the universe on a cold dividend cache.
+    """
+    symbols = universe["symbol"].astype(str).str.upper()
+    if "close" in universe.columns:
+        closes = list(universe["close"])
+    else:
+        closes = [None] * len(symbols)
+
     rows = []
-    for _, r in universe.iterrows():
-        sym = str(r["symbol"]).upper()
-        summary = dividend_summary(sym, close_vnd_thousand=r.get("close"), as_of=on_date)
-        rows.append({"symbol": sym, **summary})
-    div_df = pd.DataFrame(rows)
-    return universe.merge(div_df, on="symbol", how="left")
+    for sym, close in zip(symbols, closes):
+        if not dividend_cache_path(sym).exists():
+            rows.append({"symbol": sym, **_NO_DIVIDEND_SUMMARY})
+            continue
+        rows.append({"symbol": sym,
+                     **dividend_summary(sym, close_vnd_thousand=close,
+                                        as_of=on_date)})
+    return universe.merge(pd.DataFrame(rows), on="symbol", how="left")
 
 
 def run(on: str | None = None, n_picks: int | None = None,
@@ -62,7 +106,8 @@ def run(on: str | None = None, n_picks: int | None = None,
                                      n_picks=requested_n)
     emit_universe_meta(plan_path, universe, method="llm_only",
                        n_picks=requested_n, hose_only=hose_only,
-                       include_etfs=include_etfs, exclude=excl_list, sig=sig)
+                       include_etfs=include_etfs, exclude=excl_list, sig=sig,
+                       mode=MODE)
     return universe, plan_path
 
 
@@ -94,10 +139,26 @@ def _write_dividend_plan(universe: pd.DataFrame, on: dt.date, run_signature: str
         "   flags, dilution risk (is it really a stock dividend disguised as a",
         "   cash one, or issuing new shares to fund the payout?), sector",
         "   stability, and any signs the payout is about to be cut.",
-        "3. **Predict** `expected_hold_years` (how many years you'd expect to",
+        "3. **Judge the entry price.** A sustainable payer bought at a",
+        "   stretched price is still a poor hold: the yield you actually lock",
+        "   in is the yield AT YOUR ENTRY, and this is a buy-at-close hold with",
+        "   no stop — you cannot un-pay a bad entry. Use `rsi_14` / `mom_20` /",
+        "   `high_prox_20` plus your own research to rate the entry `good` /",
+        "   `fair` / `poor`, and watch for three distinct traps:",
+        "   - **Stretched**: extended after a run-up, `rsi_14` overbought, or",
+        "     pressed against the 20-day high (`high_prox_20` near 0).",
+        "   - **Yield trap**: a fat `dividend_yield_ttm` that is only fat",
+        "     because the price is collapsing on a real problem. Cross-check",
+        "     `payout_trend` and your sustainability findings — a high yield on",
+        "     a `declining` payout and a falling price is a warning, not a buy.",
+        "   - **Ex-date position**: `last_ex_date` tells you where you are in",
+        "     the payout cycle. If the ex-date just passed you have to wait a",
+        "     full cycle for income, and the quoted TTM yield overstates what",
+        "     you'll receive near-term.",
+        "4. **Predict** `expected_hold_years` (how many years you'd expect to",
         "   hold this for the dividend thesis to play out) and a `confidence`",
         "   (`low` / `med` / `high`) per pick.",
-        "4. For each chosen name, write a `### TICKER — Company` section",
+        "5. For each chosen name, write a `### TICKER — Company` section",
         "   documenting the business, dimensions researched, and findings —",
         "   then fill the results table at the bottom.",
         "",
@@ -120,23 +181,8 @@ def _write_dividend_plan(universe: pd.DataFrame, on: dt.date, run_signature: str
         "",
         "## Universe (UNRANKED — the full mechanically-gated set + real dividend data)",
         "",
-        "| symbol | company | close | dividend_yield_ttm | years_paid_consecutive | "
-        "payout_trend | last_ex_date | type |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        *render_universe_table(universe, _UNIVERSE_COLUMNS),
     ]
-    for _, row in universe.iterrows():
-        sym = str(row["symbol"]).upper()
-        organ = (row.get("organ_name", "") or "").replace("|", "/")
-        close = row.get("close", float("nan"))
-        yld = row.get("dividend_yield_ttm", float("nan"))
-        years = row.get("years_paid_consecutive", 0)
-        trend = row.get("payout_trend", "unknown")
-        last_ex = row.get("last_ex_date", "") or ""
-        rtype = str(row.get("instrument_type", "STOCK") or "STOCK").upper()
-        close_s = f"{close:.0f}" if pd.notna(close) else ""
-        yld_s = f"{yld:.2%}" if pd.notna(yld) else ""
-        lines.append(f"| {sym} | {organ} | {close_s} | {yld_s} | {years} | "
-                     f"{trend} | {last_ex} | {rtype} |")
 
     lines += [
         "",
@@ -165,6 +211,11 @@ def _write_dividend_plan(universe: pd.DataFrame, on: dt.date, run_signature: str
         "dilution, sector cycle, ...).",
         "- ",
         "",
+        "**Step 3 — Entry quality**: is TODAY a good price to start this hold?",
+        "State good / fair / poor and why (stretched? yield trap? where in the",
+        "payout cycle?).",
+        "- ",
+        "",
         "**Step 4 — Findings** (one bullet per dimension, tagged `[dimension-name]`,",
         "with dates + sources):",
         "- ",
@@ -172,14 +223,18 @@ def _write_dividend_plan(universe: pd.DataFrame, on: dt.date, run_signature: str
         "",
         "## Results — fill this with your chosen picks",
         "",
-        "`expected_hold_years` >= 0.5; `confidence` in {low, med, high}. Write",
+        "`expected_hold_years` >= 0.5; `confidence` in {low, med, high};",
+        "`entry_quality` in {good, fair, poor} (blank = not assessed, scored as",
+        "neutral). Finalize ranks by `dividend_yield_ttm × confidence ×",
+        "entry_factor`, where entry_factor is good 1.0 / fair 0.85 / poor 0.6 —",
+        "so a stretched entry demotes a pick rather than dropping it. Write",
         "`DROP` in `expected_hold_years` to exclude a row you listed.",
         "",
-        "| rank | symbol | expected_hold_years | confidence |",
-        "| --- | --- | --- | --- |",
+        "| rank | symbol | expected_hold_years | confidence | entry_quality |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for i in range(int(n_picks)):
-        lines.append(f"| {i + 1} |  |  |  |")
+        lines.append(f"| {i + 1} |  |  |  |  |")
     lines += [
         "",
         "When done, run:",
@@ -191,67 +246,56 @@ def _write_dividend_plan(universe: pd.DataFrame, on: dt.date, run_signature: str
     return path
 
 
-_SYM_RE = re.compile(r"^[A-Z0-9]{2,8}$")
-_NUM_RE = re.compile(r"^[+\-]?\d+(?:\.\d+)?$")
 _CONF_MAP = {"low": 0.33, "med": 0.66, "medium": 0.66, "high": 1.0}
 
+# Entry-quality → multiplier applied to the income score. A BLANK/unrecognised
+# cell parses to NaN, which is treated as the NEUTRAL factor 1.0 when scoring —
+# so a dividend plan emitted before this column existed still finalizes to
+# exactly the score and rank it would have produced before. NaN is kept
+# distinct from an explicit "good" (also 1.0) so the picks JSON can record
+# "not assessed" honestly rather than claiming the agent vetted the entry.
+_ENTRY_FACTOR_MAP = {"good": 1.0, "fair": 0.85, "poor": 0.6}
+_NEUTRAL_ENTRY_FACTOR = 1.0
+_ENTRY_LABEL_MAP = {v: k for k, v in _ENTRY_FACTOR_MAP.items()}
 
-def _parse_result_row(line: str):
-    stripped = line.strip()
-    if not stripped.startswith("|"):
-        return None
-    cells = [c.strip() for c in stripped.strip("|").split("|")]
-    if len(cells) < 4:
-        return None
-    sym = cells[1].upper()
-    if not _SYM_RE.match(sym):
-        return None
-    hold_str = cells[2].upper()
-    if hold_str == "DROP":
-        return sym, True, float("nan"), float("nan")
-    if not _NUM_RE.match(hold_str):
-        return None
-    hold_years = float(hold_str)
-    conf_str = cells[3].strip().lower()
-    confidence = _CONF_MAP.get(conf_str, float("nan"))
-    return sym, False, hold_years, confidence
+# Version stamp for the ranking formula. ``score`` used to be
+# ``dividend_yield_ttm × confidence``; it is now additionally scaled by the
+# agent's entry-quality judgment. Because the ledger persists ``rank`` but NOT
+# ``score``, a formula change would otherwise be invisible in
+# ``predictions.parquet`` — rows from both formulas would claim ``rank: 1``
+# with nothing to tell them apart. This id is written into the meta sidecar,
+# the picks JSON and the ledger so ``analyze.mode_compare`` can segment
+# history instead of blending two different strategies under one label.
+SCORE_FORMULA = "dividend_v2_entry"
+
+
+def _parse_confidence(cell: str) -> float:
+    return _CONF_MAP.get((cell or "").strip().lower(), float("nan"))
+
+
+def _parse_entry_factor(cell: str) -> float:
+    """Map the entry_quality cell to its multiplier. Unrecognised/blank -> NaN
+    ("not assessed"), scored as neutral later. This field is never a
+    ``drop_sentinel``, so a NaN here can't gate the row out."""
+    return _ENTRY_FACTOR_MAP.get((cell or "").strip().lower(), float("nan"))
+
+
+_RESULT_FIELDS = (
+    ResultField("expected_hold_years", "expected_hold_years",
+                parse_num_cell, drop_sentinel=True),
+    ResultField("confidence", "confidence", _parse_confidence),
+    # required=False: plans emitted before entry-quality existed have only 4
+    # cells and must keep finalizing.
+    ResultField("entry_quality", "entry_factor", _parse_entry_factor,
+                required=False),
+)
 
 
 def parse_dividend_plan(path: str | Path) -> pd.DataFrame:
     """Read the filled dividend plan and return DataFrame[symbol, dropped,
-    expected_hold_years, confidence, business, dimensions, key_news,
-    dimensions_cited]."""
-    text = Path(path).read_text(encoding="utf-8")
-    sections = _split_per_ticker_sections(text)
-    rows = []
-    in_results = False
-    seen: set[str] = set()
-    for line in text.splitlines():
-        if line.strip().startswith("## Results"):
-            in_results = True
-            continue
-        if not in_results:
-            continue
-        parsed = _parse_result_row(line)
-        if not parsed:
-            continue
-        sym, dropped, hold_years, confidence = parsed
-        if sym in seen:
-            continue
-        seen.add(sym)
-        sec = sections.get(sym, "")
-        findings = _extract_findings_list(sec)
-        rows.append({
-            "symbol": sym,
-            "dropped": dropped,
-            "expected_hold_years": hold_years,
-            "confidence": confidence,
-            "business": _extract_step(sec, "Business"),
-            "dimensions": _extract_step(sec, "Research dimensions"),
-            "key_news": findings,
-            "dimensions_cited": ",".join(_extract_dimension_tags(findings)),
-        })
-    return pd.DataFrame(rows)
+    expected_hold_years, confidence, entry_factor, business, dimensions,
+    key_news, dimensions_cited]."""
+    return parse_results_table(path, _RESULT_FIELDS)
 
 
 def finalize(plan_path: str | Path) -> tuple[pd.DataFrame, Path]:
@@ -280,24 +324,44 @@ def finalize(plan_path: str | Path) -> tuple[pd.DataFrame, Path]:
     if universe is not None:
         ref_cols = [c for c in ["symbol", "close", "dividend_yield_ttm",
                                 "years_paid_consecutive", "payout_trend",
-                                "last_ex_date", "organ_name", "instrument_type"]
+                                "last_ex_date", "organ_name", "instrument_type",
+                                # Recorded so the picks JSON preserves the price
+                                # state the entry judgment was actually made on.
+                                "rsi_14", "mom_20", "high_prox_20", "adv_vnd_20"]
                    if c in universe.columns]
         merged = scored.merge(universe[ref_cols], on="symbol", how="left")
     else:
         merged = scored
 
     merged = add_dividend_price_suggestions(merged)
-    # score = yield-weighted sustainability: dividend_yield_ttm * confidence.
+
+    # Income quality: yield weighted by the agent's sustainability confidence.
     yld = merged.get("dividend_yield_ttm", pd.Series(float("nan"), index=merged.index)).astype(float)
     conf = merged.get("confidence", pd.Series(float("nan"), index=merged.index)).astype(float)
-    merged["score"] = (yld.fillna(0.0) * conf.fillna(0.5)).round(6)
+    merged["score_income"] = (yld.fillna(0.0) * conf.fillna(0.5)).round(6)
+
+    # Entry quality scales it: a sustainable payer bought at a stretched price
+    # is a worse hold than the same payer bought well, because this is a
+    # buy-at-close hold with no stop — you cannot un-pay the entry. An
+    # unassessed entry (NaN) scores neutral, so pre-existing plans rank exactly
+    # as they did before.
+    entry_factor = merged.get(
+        "entry_factor", pd.Series(float("nan"), index=merged.index)).astype(float)
+    merged["entry_factor"] = entry_factor
+    merged["entry_quality"] = entry_factor.map(
+        lambda v: _ENTRY_LABEL_MAP.get(v, "") if pd.notna(v) else "")
+    merged["score"] = (merged["score_income"]
+                       * entry_factor.fillna(_NEUTRAL_ENTRY_FACTOR)).round(6)
+
     merged = merged.sort_values("score", ascending=False).reset_index(drop=True)
     merged["rank"] = merged.index + 1
     # No T+2/T+N target for a hold — the ledger's exit resolution doesn't
     # apply here; this flag is purely informational for downstream tools.
     merged["below_recovery_bar"] = False
+    merged["score_formula"] = SCORE_FORMULA
 
     meta = read_meta(plan_path)
     out, sig, _ = write_picks_json(MODE, merged, plan_path, meta,
-                                   extra={"weight": None})
+                                   extra={"weight": None,
+                                          "score_formula": SCORE_FORMULA})
     return merged, out

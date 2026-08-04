@@ -12,8 +12,10 @@ from stockpredict.analyze import mode_compare as mc
 def _ledger(rows):
     return pd.DataFrame([
         dict(run_id=a.replace("-", "") + "_" + s, signature=s, as_of=a,
-             mode=m, symbol=sym, realized_return=r, evaluated=ev)
-        for (a, m, s, sym, r, ev) in rows
+             mode=m, symbol=sym, realized_return=r, evaluated=ev,
+             score_formula=(row[6] if len(row) > 6 else ""))
+        for row in rows
+        for (a, m, s, sym, r, ev) in [row[:6]]
     ])
 
 
@@ -105,3 +107,43 @@ def test_report_renders_for_empty(monkeypatch):
     md = mc.format_report(res)
     assert "Mode comparison" in md
     assert res.get("note")
+
+
+def test_mixed_score_formula_is_flagged(monkeypatch):
+    """The ledger keeps `rank` but not `score`. If a mode redefines its scoring
+    mid-history, pooling its rows averages two different strategies — the
+    report must say so instead of presenting one clean number."""
+    rows = [
+        # dividend ran on two days: one before the entry-quality formula
+        # (empty stamp), one after.
+        ("2026-06-10", "dividend", "dividend", "AAA", 0.01, True, ""),
+        ("2026-06-10", "momentum", "momentum", "BBB", 0.03, True, ""),
+        ("2026-06-11", "dividend", "dividend", "CCC", 0.04, True, "dividend_v2_entry"),
+        ("2026-06-11", "momentum", "momentum", "DDD", 0.02, True, ""),
+    ]
+    _patch(monkeypatch, rows)
+    res = mc.compare_modes(window_days=3650)
+
+    by_mode = {r["mode"]: r for r in res["per_mode"]}
+    assert by_mode["dividend"]["mixed_formula"] is True
+    assert by_mode["dividend"]["score_formulas"] == ["", "dividend_v2_entry"]
+    # momentum never changed formula -> not flagged.
+    assert by_mode["momentum"]["mixed_formula"] is False
+
+    md = mc.format_report(res)
+    assert "pools more than one ranking formula" in md
+    assert "dividend_v2_entry" in md
+    assert "(pre-stamp)" in md
+
+
+def test_single_score_formula_is_not_flagged(monkeypatch):
+    rows = [
+        ("2026-06-10", "dividend", "dividend", "AAA", 0.01, True, "dividend_v2_entry"),
+        ("2026-06-10", "momentum", "momentum", "BBB", 0.03, True, ""),
+        ("2026-06-11", "dividend", "dividend", "CCC", 0.04, True, "dividend_v2_entry"),
+        ("2026-06-11", "momentum", "momentum", "DDD", 0.02, True, ""),
+    ]
+    _patch(monkeypatch, rows)
+    res = mc.compare_modes(window_days=3650)
+    assert all(not r["mixed_formula"] for r in res["per_mode"])
+    assert "pools more than one ranking formula" not in mc.format_report(res)

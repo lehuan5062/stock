@@ -22,3 +22,17 @@
   path. Three modes: `momentum`, `rebound`, `dividend` (see `agent_prompt.md`
   and `README.md`). `self_correct_prompt.md` and `claude_prompt.md` were
   retired; `agent_prompt.md` is the only prompt file now.
+- `momentum` and `rebound` are mechanically IDENTICAL — same universe gate,
+  same N/P prediction, same `score = P/N`, same pricing. They differ ONLY in
+  the rubric paragraph in `_RUBRIC` (`news/llm_plan_runner.py`). Both run on
+  `modes/swing.py`; `modes/momentum.py` and `modes/rebound.py` are shims that
+  bind the mode name. Put shared changes in `swing.py`, strategy wording in
+  `_RUBRIC`. `dividend` is genuinely separate (own plan writer, results shape,
+  pricing and scoring).
+- There is NO coded downtrend filter and no recovery-probability model. The
+  agent judges dip/trend shape from the raw `mom_20` / `high_prox_20` /
+  `rsi_14` columns.
+- The ledger (`predictions.parquet`) persists `rank` but NOT `score`. If you
+  change how a mode ranks, you MUST bump its `score_formula` stamp (see
+  `modes.dividend.SCORE_FORMULA`) or historical `rank` rows silently become
+  incomparable and `compare-modes` will blend two strategies under one label.

@@ -21,24 +21,30 @@ from ..tracking import effective_today_for_trading, record, run_signature
 def emit_universe_meta(plan_path: Path, universe: pd.DataFrame, *,
                        method: str, n_picks: int, hose_only: bool,
                        include_etfs: bool, exclude: list[str],
-                       sig: str) -> None:
+                       sig: str, mode: str | None = None) -> None:
     """Write the ``.candidates.parquet`` sidecar (full universe, for
     finalize to recover reference columns) + ``.meta.json`` (run params) next
-    to the plan markdown — same convention across all 3 modes."""
+    to the plan markdown — same convention across all 3 modes.
+
+    ``mode`` is written so ``cli.finalize`` can read it back directly instead of
+    inferring the mode from the ``{mode}_plan_*`` filename. That branch already
+    existed in the CLI but was dead, because this function never wrote the key.
+    The filename fallback still applies to plans emitted before this change.
+    """
     sidecar = plan_path.with_suffix(".candidates.parquet")
     universe.to_parquet(sidecar, index=False)
     meta_path = plan_path.with_suffix(".meta.json")
-    meta_path.write_text(
-        json.dumps({
-            "method": method,
-            "n_picks": n_picks,
-            "hose_only": hose_only,
-            "include_etfs": include_etfs,
-            "exclude": exclude,
-            "run_signature": sig,
-        }, indent=2),
-        encoding="utf-8",
-    )
+    payload = {
+        "method": method,
+        "n_picks": n_picks,
+        "hose_only": hose_only,
+        "include_etfs": include_etfs,
+        "exclude": exclude,
+        "run_signature": sig,
+    }
+    if mode is not None:
+        payload["mode"] = mode
+    meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def read_meta(plan_path: Path) -> dict:

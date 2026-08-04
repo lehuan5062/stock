@@ -46,6 +46,7 @@ def _format_picks(picks) -> str:
         "score", "pred_days", "pred_profit",
         "below_recovery_bar", "dividend_yield_ttm", "years_paid_consecutive",
         "payout_trend", "expected_hold_years", "confidence",
+        "entry_quality", "score_income",
     ] if c in picks.columns]
     if not show_cols:
         return picks.to_string(index=False)
@@ -89,8 +90,13 @@ def _format_picks_explained(picks) -> str:
                 parts.append(f"  Trade: buy @ {entry:,} VND  |  HOLD (no target/no stop)  "
                              f"|  expected hold ≈ {hold:.1f}y")
             yld_s = f"{yld:.2%}" if pd.notna(yld) else "n/a"
+            entry_q = str(r.get("entry_quality", "") or "") or "not assessed"
             parts.append(f"  Signal: yield_ttm={yld_s}  years_paid={years}  "
                          f"trend={trend}  score={r.get('score', float('nan')):.4f}")
+            parts.append(f"  Entry:  {entry_q}"
+                         + (f"  (income score {r['score_income']:.4f} × "
+                            f"{r.get('entry_factor', 1.0):.2f})"
+                            if pd.notna(r.get("score_income")) else ""))
         elif "score" in r and pd.notna(r.get("score")):
             if "close_vnd" in r and pd.notna(r.get("close_vnd")):
                 entry = int(r["close_vnd"]); tgt = int(r["target_vnd"])

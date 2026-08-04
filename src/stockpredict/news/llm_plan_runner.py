@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Sequence
 
 import pandas as pd
 
@@ -54,7 +56,7 @@ _NUM_RE = re.compile(r"^[+\-]?\d+(?:\.\d+)?$")
 _DIMENSION_TAG_RE = re.compile(r"\[([a-z0-9][a-z0-9_/.+-]*)\]", re.IGNORECASE)
 
 
-def _split_per_ticker_sections(text: str) -> dict[str, str]:
+def split_per_ticker_sections(text: str) -> dict[str, str]:
     """Slice the plan markdown into a {ticker: section_text} dict using the
     ``### TICKER  —  Company`` headings emitted by ``write_llm_plan``."""
     sections: dict[str, str] = {}
@@ -87,7 +89,7 @@ def _split_per_ticker_sections(text: str) -> dict[str, str]:
     return sections
 
 
-def _extract_step(section: str, step_label: str) -> str:
+def extract_step(section: str, step_label: str) -> str:
     """Pull the user-written text under a `**Step N — <label>**` heading.
     Returns the joined non-empty bullet/paragraph lines, stripped."""
     pat = re.compile(
@@ -109,8 +111,8 @@ def _extract_step(section: str, step_label: str) -> str:
     return " ".join(out_lines).strip()
 
 
-def _extract_findings_list(section: str) -> list[str]:
-    """Same as ``_extract_step('Findings')`` but keep each bullet as a list
+def extract_findings_list(section: str) -> list[str]:
+    """Same as ``extract_step('Findings')`` but keep each bullet as a list
     item."""
     pat = re.compile(
         r"\*\*Step \d+ — Findings\*\*[^\n]*\n(.*?)(?=\*\*Step \d+ —|\Z)",
@@ -130,7 +132,7 @@ def _extract_findings_list(section: str) -> list[str]:
     return out
 
 
-def _extract_dimension_tags(findings: list[str]) -> list[str]:
+def extract_dimension_tags(findings: list[str]) -> list[str]:
     """Pull `[tag-name]` markers out of Step 4 bullets, deduped, lower-cased,
     in first-seen order. See the module docstring of the retired
     ``claude_runner`` for the full tagging convention."""
@@ -146,6 +148,16 @@ def _extract_dimension_tags(findings: list[str]) -> list[str]:
             seen_set.add(tag)
             seen.append(tag)
     return seen
+
+
+# Backward-compatible aliases. These four helpers were private until the
+# momentum/rebound engine was unified; ``modes.dividend`` reached across the
+# module boundary for them, which is what prompted publicizing the names.
+# Existing callers (notably ``tests/test_dimension_tracking.py``) keep working.
+_split_per_ticker_sections = split_per_ticker_sections
+_extract_step = extract_step
+_extract_findings_list = extract_findings_list
+_extract_dimension_tags = extract_dimension_tags
 
 
 def _parse_price_cell(cell: str) -> float:
@@ -174,6 +186,190 @@ def _parse_profit_cell(cell: str) -> float:
     except ValueError:
         return float("nan")
     return v / 100.0 if pct else v
+
+
+def parse_num_cell(cell: str) -> float:
+    """Strict numeric cell parse: returns NaN unless the cell is a plain
+    number. Used for the gate field of a results table (see ``ResultField``)."""
+    s = (cell or "").strip()
+    if not _NUM_RE.match(s):
+        return float("nan")
+    return float(s)
+
+
+# ---------------------------------------------------------------------------
+# Shared results-table parsing
+#
+# Every mode's results table is ``| rank | symbol | <field> ... |``; the modes
+# differ only in which fields follow ``symbol``. ``ResultField`` describes one
+# such field so a single scan loop covers all of them.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResultField:
+    """One agent-filled cell of a results table.
+
+    ``header`` is the markdown column label (documentation only — parsing is
+    positional, matching the original per-mode parsers). ``out_col`` is the
+    DataFrame column produced. ``parse`` maps the raw cell text to a float.
+
+    ``drop_sentinel`` marks the ONE field that carries the ``DROP`` keyword and
+    doubles as the row gate: if it is present but doesn't parse to a number,
+    the whole row is skipped. That is what makes an unfilled template row
+    (blank cells) parse to nothing rather than to a NaN pick.
+
+    ``required=False`` marks a trailing field that older plan files predate.
+    It is excluded from the minimum-cell-count check and reads as an empty
+    cell when absent, so a plan emitted before the field existed still
+    finalizes.
+    """
+    header: str
+    out_col: str
+    parse: Callable[[str], float]
+    drop_sentinel: bool = False
+    required: bool = True
+
+
+def parse_results_table(path: str | Path, fields: Sequence[ResultField]
+                        ) -> pd.DataFrame:
+    """Read a filled plan's ``## Results`` table plus its per-ticker research
+    sections.
+
+    Returns DataFrame[symbol, dropped, *<field.out_col for field in fields>,
+    business, dimensions, key_news, dimensions_cited]. Rows are deduped by
+    symbol, first occurrence winning.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    sections = split_per_ticker_sections(text)
+    min_cells = 2 + sum(1 for f in fields if f.required)
+
+    rows = []
+    in_results = False
+    seen: set[str] = set()
+    for line in text.splitlines():
+        if line.strip().startswith("## Results"):
+            in_results = True
+            continue
+        if not in_results:
+            continue
+
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < min_cells:
+            continue
+        sym = cells[1].upper()
+        if not _SYM_RE.match(sym) or sym in seen:
+            continue
+
+        values: dict[str, float] = {}
+        dropped = False
+        reject = False
+        for i, field in enumerate(fields):
+            raw = cells[2 + i] if len(cells) > 2 + i else ""
+            if field.drop_sentinel and raw.strip().upper() == "DROP":
+                dropped = True
+                values = {f.out_col: float("nan") for f in fields}
+                break
+            value = field.parse(raw)
+            if field.drop_sentinel and pd.isna(value):
+                reject = True
+                break
+            values[field.out_col] = value
+        if reject:
+            continue
+
+        seen.add(sym)
+        sec = sections.get(sym, "")
+        findings = extract_findings_list(sec)
+        rows.append({
+            "symbol": sym,
+            "dropped": dropped,
+            **values,
+            "business": extract_step(sec, "Business"),
+            "dimensions": extract_step(sec, "Research dimensions")
+                          or extract_step(sec, "Key drivers"),
+            "key_news": findings,
+            "dimensions_cited": ",".join(extract_dimension_tags(findings)),
+        })
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Shared universe-table rendering
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Column:
+    """One universe-reference-table column: source frame key, markdown header,
+    and a cell formatter. ``fmt`` must render NaN/None as an empty string."""
+    key: str
+    header: str
+    fmt: Callable[[object], str]
+
+
+def fmt_text(v: object) -> str:
+    return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+
+
+def fmt_symbol(v: object) -> str:
+    return str(v).upper()
+
+
+def fmt_type(v: object) -> str:
+    s = fmt_text(v).strip()
+    return (s or "STOCK").upper()
+
+
+def fmt_int(v: object) -> str:
+    return f"{v:.0f}" if pd.notna(v) else ""
+
+
+def fmt_signed3(v: object) -> str:
+    return f"{v:+.3f}" if pd.notna(v) else ""
+
+
+def fmt_comma(v: object) -> str:
+    return f"{v:,.0f}" if pd.notna(v) else ""
+
+
+def fmt_pct2(v: object) -> str:
+    return f"{v:.2%}" if pd.notna(v) else ""
+
+
+def render_universe_table(universe: pd.DataFrame,
+                          columns: Sequence[Column]) -> list[str]:
+    """Render the UNRANKED universe reference table as markdown lines (header,
+    separator, one row per symbol). Pipe characters inside any cell are
+    replaced with ``/`` so a company name can't break the table."""
+    lines = [
+        "| " + " | ".join(c.header for c in columns) + " |",
+        "| " + " | ".join("---" for _ in columns) + " |",
+    ]
+    for _, row in universe.iterrows():
+        cells = [c.fmt(row.get(c.key, float("nan"))).replace("|", "/")
+                 for c in columns]
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
+# The momentum/rebound universe reference table. Both modes show the same
+# columns — the strategies differ only in the rubric text below.
+SWING_UNIVERSE_COLUMNS = (
+    Column("symbol", "symbol", fmt_symbol),
+    Column("organ_name", "company", fmt_text),
+    Column("close", "close", fmt_int),
+    Column("rsi_14", "rsi_14", fmt_int),
+    Column("mom_5", "mom_5", fmt_signed3),
+    Column("mom_20", "mom_20", fmt_signed3),
+    Column("high_prox_20", "high_prox_20", fmt_signed3),
+    Column("adv_vnd_20", "adv_vnd_20", fmt_comma),
+    Column("history_days", "history_days", fmt_int),
+    Column("instrument_type", "type", fmt_type),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +416,11 @@ _RUBRIC = {
         ],
     },
 }
+
+
+#: The modes ``write_llm_plan`` / ``parse_llm_plan`` can serve — i.e. the ones
+#: driven by ``modes/swing.py``. Public so callers don't reach into ``_RUBRIC``.
+SWING_MODES = tuple(_RUBRIC)
 
 
 def write_llm_plan(mode: str, universe: pd.DataFrame, on: dt.date | None = None,
@@ -278,7 +479,7 @@ def write_llm_plan(mode: str, universe: pd.DataFrame, on: dt.date | None = None,
         *rubric["vet_lines"],
         "",
         "**Hard override**: if you find a delisting / trading halt / bankruptcy",
-        "filing, do NOT pick the name (or write `DROP` in its conviction cell).",
+        "filing, do NOT pick the name (or write `DROP` in its `N_days` cell).",
         "",
         "## Global / macro context (read once, before picking)",
         "",
@@ -301,30 +502,8 @@ def write_llm_plan(mode: str, universe: pd.DataFrame, on: dt.date | None = None,
         "",
         "## Universe (UNRANKED — the full mechanically-gated set)",
         "",
-        "| symbol | company | close | rsi_14 | mom_5 | mom_20 | high_prox_20 | "
-        "adv_vnd_20 | history_days | type |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        *render_universe_table(universe, SWING_UNIVERSE_COLUMNS),
     ]
-    for _, row in universe.iterrows():
-        sym = str(row["symbol"]).upper()
-        organ = (row.get("organ_name", "") or "").replace("|", "/")
-        close = row.get("close", float("nan"))
-        rsi = row.get("rsi_14", float("nan"))
-        mom5 = row.get("mom_5", float("nan"))
-        mom20 = row.get("mom_20", float("nan"))
-        hp20 = row.get("high_prox_20", float("nan"))
-        adv = row.get("adv_vnd_20", float("nan"))
-        hist = row.get("history_days", float("nan"))
-        rtype = str(row.get("instrument_type", "STOCK") or "STOCK").upper()
-        close_s = f"{close:.0f}" if pd.notna(close) else ""
-        rsi_s = f"{rsi:.0f}" if pd.notna(rsi) else ""
-        mom5_s = f"{mom5:+.3f}" if pd.notna(mom5) else ""
-        mom20_s = f"{mom20:+.3f}" if pd.notna(mom20) else ""
-        hp20_s = f"{hp20:+.3f}" if pd.notna(hp20) else ""
-        adv_s = f"{adv:,.0f}" if pd.notna(adv) else ""
-        hist_s = f"{hist:.0f}" if pd.notna(hist) else ""
-        lines.append(f"| {sym} | {organ} | {close_s} | {rsi_s} | {mom5_s} | "
-                     f"{mom20_s} | {hp20_s} | {adv_s} | {hist_s} | {rtype} |")
 
     lines += [
         "",
@@ -386,28 +565,10 @@ def write_llm_plan(mode: str, universe: pd.DataFrame, on: dt.date | None = None,
     return path
 
 
-def _parse_result_row(line: str):
-    """Parse one results-table row: ``| rank | symbol | N_days | P |``.
-    Returns (symbol, dropped, pred_days, pred_profit) or None for non-data rows
-    (header / separator / blank cells). ``DROP`` in the N_days cell marks the
-    row excluded."""
-    stripped = line.strip()
-    if not stripped.startswith("|"):
-        return None
-    cells = [c.strip() for c in stripped.strip("|").split("|")]
-    if len(cells) < 4:
-        return None
-    sym = cells[1].upper()
-    if not _SYM_RE.match(sym):
-        return None
-    n_str = cells[2].upper()
-    if n_str == "DROP":
-        return sym, True, float("nan"), float("nan")
-    if not _NUM_RE.match(n_str):
-        return None
-    pred_days = float(n_str)
-    pred_profit = _parse_profit_cell(cells[3])
-    return sym, False, pred_days, pred_profit
+SWING_RESULT_FIELDS = (
+    ResultField("N_days", "pred_days", parse_num_cell, drop_sentinel=True),
+    ResultField("P", "pred_profit", _parse_profit_cell),
+)
 
 
 def parse_llm_plan(path: str | Path) -> pd.DataFrame:
@@ -416,35 +577,4 @@ def parse_llm_plan(path: str | Path) -> pd.DataFrame:
     dimensions_cited]. Entry is the close and the target is
     ``close × (1 + pred_profit)``, both set at finalize; there is no stop.
     ``dropped=True`` marks a DROP row."""
-    text = Path(path).read_text(encoding="utf-8")
-    sections = _split_per_ticker_sections(text)
-    rows = []
-    in_results = False
-    seen: set[str] = set()
-    for line in text.splitlines():
-        if line.strip().startswith("## Results"):
-            in_results = True
-            continue
-        if not in_results:
-            continue
-        parsed = _parse_result_row(line)
-        if not parsed:
-            continue
-        sym, dropped, pred_days, pred_profit = parsed
-        if sym in seen:
-            continue
-        seen.add(sym)
-        sec = sections.get(sym, "")
-        findings = _extract_findings_list(sec)
-        rows.append({
-            "symbol": sym,
-            "dropped": dropped,
-            "pred_days": pred_days,
-            "pred_profit": pred_profit,
-            "business": _extract_step(sec, "Business"),
-            "dimensions": _extract_step(sec, "Research dimensions")
-                          or _extract_step(sec, "Key drivers"),
-            "key_news": findings,
-            "dimensions_cited": ",".join(_extract_dimension_tags(findings)),
-        })
-    return pd.DataFrame(rows)
+    return parse_results_table(path, SWING_RESULT_FIELDS)

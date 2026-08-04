@@ -22,7 +22,7 @@ several in a session:
 |---|---|---|---|
 | **momentum** | **short term** — trend-following | `N_days` (to profit) + `P` (profit) | buy at close, target = `close×(1+P)`, no stop, hold until target |
 | **rebound** | **medium term** — mean-reversion bounce | `N_days` + `P` | same as momentum |
-| **dividend** | **long term** — income hold | `expected_hold_years` + `confidence` | buy at close, no target, no stop — a hold |
+| **dividend** | **long term** — income hold | `expected_hold_years` + `confidence` + `entry_quality` | buy at close, no target, no stop — a hold |
 
 The three modes are **not** better-or-worse than one another — they are
 different holding horizons. Which one to run is the user's call; never
@@ -146,8 +146,10 @@ rate-limited, same caution as a full `update-data`).
 UNRANKED universe reference table (with the plain liquidity/technical columns
 — `adv_vnd_20`, `close`, `rsi_14`, `mom_5`, `mom_20`, `high_prox_20` for
 momentum/rebound; `dividend_yield_ttm`, `years_paid_consecutive`,
-`payout_trend` for dividend), a per-pick section template, and an empty
-`## Results` table at the bottom.
+`payout_trend`, `last_ex_date` PLUS `rsi_14`, `mom_20`, `high_prox_20`,
+`adv_vnd_20` for dividend, so you can judge the entry price as well as the
+income), a per-pick section template, and an empty `## Results` table at the
+bottom.
 
 ## Step 3 — Research each candidate you choose
 
@@ -171,10 +173,16 @@ plain data columns as a first filter, same way you'd screen manually):
      delisting, insolvency, structural decline)? Earnings, solvency/debt,
      dilution, governance/audit flags, delisting/halt risk, sector cycle,
      key contracts, insider action, policy/decrees.
-   - **dividend**: is the payout sustainable? Earnings coverage (funded from
-     FCF/earnings, not debt), governance/audit flags, dilution risk (a stock
-     dividend disguised as cash, or new-share issuance funding the payout),
-     sector stability, any sign of an imminent cut.
+   - **dividend**: two separate questions. (a) *Is the payout sustainable?*
+     Earnings coverage (funded from FCF/earnings, not debt), governance/audit
+     flags, dilution risk (a stock dividend disguised as cash, or new-share
+     issuance funding the payout), sector stability, any sign of an imminent
+     cut. (b) *Is today a good price to start the hold?* The yield you lock in
+     is the yield AT YOUR ENTRY, and there is no stop — so rate the entry
+     `good`/`fair`/`poor` from `rsi_14`/`mom_20`/`high_prox_20` plus your
+     research, watching for a stretched price, a **yield trap** (fat yield only
+     because the price is collapsing on a real problem — cross-check
+     `payout_trend`), and where `last_ex_date` puts you in the payout cycle.
 3. Search with `WebSearch`/`WebFetch`, **English AND Vietnamese** (Vietnamese
    press covers far more). Keywords: `<TICKER> cổ phiếu`, `<company> lợi
    nhuận quý`, `cổ tức`, `phát hành cổ phiếu`, `huỷ niêm yết`, `nghị định /
@@ -210,8 +218,10 @@ plain data columns as a first filter, same way you'd screen manually):
   - momentum / rebound: `N_days` (trading days to a profitable exit, >= 1)
     and `P` (decimal return fraction, e.g. `0.05` = +5%; `5%` also
     accepted). Write `DROP` in `N_days` to exclude a row you listed.
-  - dividend: `expected_hold_years` (>= 0.5) and `confidence`
-    (`low`/`med`/`high`). Write `DROP` in `expected_hold_years` to exclude.
+  - dividend: `expected_hold_years` (>= 0.5), `confidence`
+    (`low`/`med`/`high`), and `entry_quality` (`good`/`fair`/`poor`; blank =
+    not assessed, scored as neutral). Write `DROP` in `expected_hold_years` to
+    exclude.
 
 ## Step 5 — Finalize
 
@@ -221,8 +231,10 @@ plain data columns as a first filter, same way you'd screen manually):
 
 Auto-detects the mode from the plan's `.meta.json`. momentum/rebound:
 computes `score = P / N`, ranks by it, writes `reports\picks_<mode>_<DATE>_<sig>.json`.
-Dividend: computes `score = dividend_yield_ttm × confidence`, ranks by it,
-same JSON shape. Updates the ledger either way.
+Dividend: computes `score_income = dividend_yield_ttm × confidence` and then
+`score = score_income × entry_factor` (`good` 1.0 / `fair` 0.85 / `poor` 0.6;
+unassessed = neutral 1.0), ranks by `score`, same JSON shape. Updates the
+ledger either way.
 
 ## Step 6 — Report to the user
 
@@ -233,8 +245,9 @@ Per pick:
   True/False`. State there is **no stop-loss** — exit is reaching the
   target.
 - dividend: `dividend_yield_ttm`, `years_paid_consecutive`, `payout_trend`,
-  `expected_hold_years`, `confidence`; buy price; state this is a **HOLD —
-  no target, no stop, no fixed sell day**.
+  `expected_hold_years`, `confidence`, `entry_quality` (and why you rated the
+  entry that way); buy price; state this is a **HOLD — no target, no stop, no
+  fixed sell day**.
 - News/dimension rationale citing a tag; the dimensions you researched.
 - If you set `adj_*` prices (momentum/rebound only, if the sidecar carries
   them), show that trade on its own line with a one-sentence why.

@@ -92,8 +92,11 @@ agent gives a final cross-mode recommendation.
 3. **Agent research pass**: the agent selects, researches, and fills the
    plan (see [`agent_prompt.md`](agent_prompt.md) for the full per-mode
    rubric).
-4. **Finalize** ([`modes/momentum.py`](src/stockpredict/modes/momentum.py) /
-   [`modes/rebound.py`](src/stockpredict/modes/rebound.py) /
+4. **Finalize** ([`modes/swing.py`](src/stockpredict/modes/swing.py), shared by
+   momentum + rebound, which are mechanically identical and differ only in
+   their prompt rubric — [`modes/momentum.py`](src/stockpredict/modes/momentum.py)
+   and [`modes/rebound.py`](src/stockpredict/modes/rebound.py) are thin shims
+   binding the mode name; plus
    [`modes/dividend.py`](src/stockpredict/modes/dividend.py)): ranks, prices
    via [`pricing.py`](src/stockpredict/pricing.py)
    (`add_recovery_price_suggestions` for momentum/rebound,
@@ -226,7 +229,8 @@ reasons over them itself, per run, informed by `agent_prompt.md`'s rubric.
     data/                    vnstock wrappers (+ vnai quota bypass): OHLCV, dividends, cache, universe, rate limiter
     features/                 technical + microstructure indicators
     news/                    llm_plan_runner (shared plan writer/parser) + sources + company_info
-    modes/                   momentum.py / rebound.py / dividend.py + common.py shared helpers
+    modes/                   swing.py (momentum+rebound engine) + momentum.py / rebound.py shims
+                             + dividend.py + common.py shared helpers
     analyze/                 mode_compare.py — cross-mode ledger comparison
 
   scripts/                 one-off diagnostics (cache repair) + demo helper
