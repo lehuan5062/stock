@@ -340,6 +340,19 @@ def fmt_pct2(v: object) -> str:
     return f"{v:.2%}" if pd.notna(v) else ""
 
 
+def fmt_num1(v: object) -> str:
+    return f"{v:.1f}" if pd.notna(v) else ""
+
+
+def fmt_ratio3(v: object) -> str:
+    """Unsigned 3-dp ratio (e.g. a stock-dividend exercise ratio). Renders an
+    exact zero as an empty cell — 'no stock dividends' reads better as blank
+    than as 0.000 in a wide reference table."""
+    if pd.isna(v) or float(v) == 0.0:
+        return ""
+    return f"{float(v):.3f}"
+
+
 def render_universe_table(universe: pd.DataFrame,
                           columns: Sequence[Column]) -> list[str]:
     """Render the UNRANKED universe reference table as markdown lines (header,

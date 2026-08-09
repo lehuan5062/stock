@@ -32,6 +32,20 @@
 - There is NO coded downtrend filter and no recovery-probability model. The
   agent judges dip/trend shape from the raw `mom_20` / `high_prox_20` /
   `rsi_14` columns.
+- `dividend` mode is about the DIVIDEND, not about timing an entry. It ranks on
+  the agent's FORWARD forecast (`fwd_dps_vnd` → `pred_forward_yield ×
+  confidence`); trailing yield is an input, never the ranking objective. Do not
+  reintroduce price/technical columns (rsi/momentum) into its universe table —
+  that was tried and reverted as rebound-flavoured drift.
+- The dividend cache has outlived two schema rewrites.
+  `data.dividends.read_dividend_history` normalizes ALL known on-disk shapes to
+  `CANONICAL_COLUMNS`; never re-add a strict schema guard that returns empty on
+  an unrecognised file, that silently hid ~148 of 150 symbols. Both `DIV` and
+  `ISS` events are kept (`kind` = cash/stock/rights/placement, classified from
+  `event_title_en` — VCI's ISS payload has no price field). Income metrics must
+  be computed from `kind == "cash"` rows ONLY, and never sum `stock` with
+  `placement`: shares handed to holders and shares sold to third parties are
+  different facts.
 - The ledger (`predictions.parquet`) persists `rank` but NOT `score`. If you
   change how a mode ranks, you MUST bump its `score_formula` stamp (see
   `modes.dividend.SCORE_FORMULA`) or historical `rank` rows silently become

@@ -161,11 +161,12 @@ def test_read_backfills_missing_dimensions_cited(monkeypatch, tmp_path):
     # Exclude every later-added column so the legacy frame represents a
     # ledger written BEFORE the dimensions_cited release (and any later
     # release like low-prediction). _read should backfill them all.
+    # Derived from the module's own backfill tuples rather than hardcoded, so
+    # adding a ledger column can't silently break this test again.
     later_added = (set(tracking._NEW_STRING_COLUMNS)
                    | set(tracking._NEW_BOOL_COLUMNS)
-                   | {"pred_low", "entry_limit_price", "t0_evaluated",
-                      "pred_days", "pred_profit", "pred_recovery_prob",
-                      "actual_exit_date", "exit_reason"})
+                   | set(tracking._NEW_FLOAT_COLUMNS)
+                   | {"t0_evaluated", "actual_exit_date"})
     legacy_cols = [c for c in tracking._LEDGER_COLUMNS if c not in later_added]
     today = pd.Timestamp.today().normalize()
     legacy = pd.DataFrame([{

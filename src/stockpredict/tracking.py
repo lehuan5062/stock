@@ -84,6 +84,12 @@ _LEDGER_COLUMNS = [
     # pre-dating the stamp". Set by the mode's finalize (see
     # ``modes.dividend.SCORE_FORMULA``).
     "score_formula",
+    # Dividend-mode forecast: the agent's predicted CASH dividend per share over
+    # the 12 months after `as_of`, in absolute VND. Persisted so the forecast can
+    # later be scored against what actually got paid — the same reason
+    # `pred_days` / `pred_profit` are kept for the swing modes. NaN for
+    # momentum/rebound rows and for dividend rows predating the forward model.
+    "pred_fwd_dps_vnd",
 ]
 
 
@@ -91,7 +97,8 @@ _LEDGER_COLUMNS = [
 # with NaN so the file stays readable across schema changes.
 _NEW_FLOAT_COLUMNS = ("t0_open", "t0_low", "t0_close", "entry_slippage",
                       "pred_low", "entry_limit_price",
-                      "pred_days", "pred_profit", "pred_recovery_prob")
+                      "pred_days", "pred_profit", "pred_recovery_prob",
+                      "pred_fwd_dps_vnd")
 _NEW_STRING_COLUMNS = ("dimensions_cited", "exit_reason", "score_formula")
 # Boolean columns added in the low-prediction release. Default for legacy
 # rows: ``entry_limit_filled`` is False (no limit was placed); for
@@ -537,6 +544,11 @@ def record(picks: pd.DataFrame, mode: str, as_of: str | dt.date | None = None,
             # Ranking-formula version stamp (see _LEDGER_COLUMNS). Empty for
             # modes that have never redefined their score.
             "score_formula": str(r.get("score_formula", "") or ""),
+            # Dividend-mode forward forecast (NaN for the swing modes).
+            "pred_fwd_dps_vnd": (float(r["pred_fwd_dps_vnd"])
+                                 if "pred_fwd_dps_vnd" in r
+                                 and pd.notna(r["pred_fwd_dps_vnd"])
+                                 else np.nan),
         })
     add = pd.DataFrame(rows)
     df = _read()

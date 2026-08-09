@@ -13,7 +13,7 @@ the picking, ranking, and pricing, driven by [`agent_prompt.md`](agent_prompt.md
 | ---- | ------- | --------------- | ---- |
 | **momentum** | **short term** — trend-following | `N_days` + `P` (profit) | buy at close, target = `close×(1+P)`, no stop, hold until target |
 | **rebound** | **medium term** — mean-reversion bounce | `N_days` + `P` | same as momentum |
-| **dividend** | **long term** — income hold | `expected_hold_years` + `confidence` | buy at close, no target, no stop — a hold |
+| **dividend** | **long term** — income hold | `fwd_dps_vnd` (next-12m dividend) + `expected_hold_years` + `confidence` | buy at close, no target, no stop — a hold |
 
 The modes aren't better-or-worse than one another — they're different holding
 horizons, so which to run is your call. The agent never recommends one.
@@ -21,11 +21,14 @@ horizons, so which to run is your call. The agent never recommends one.
 Momentum and rebound share one objective (`score = P/N`, profit per day
 held) and one trade shape (buy at close, flexible exit, no stop-loss —
 backtests showed a stop backfires on this kind of mean-reversion/momentum
-bet). Dividend is a hold: the deterministic fetcher computes real yield /
-payout-history numbers (`dividend_yield_ttm`, `years_paid_consecutive`,
-`payout_trend`), and the agent's only job is to vet sustainability
-(earnings coverage, governance, dilution risk) — never to search for the
-numbers itself.
+bet). Dividend is a hold, and it **forecasts**: the deterministic fetcher
+computes real payout history (trailing yield, cash paid, payout cadence,
+consecutive years, trend) plus a dilution signal (stock-dividend ratio and
+rights-issue count), and the agent predicts `fwd_dps_vnd` — the cash dividend
+per share it expects over the next 12 months. Ranking is
+`pred_forward_yield × confidence`, so the forecast decides the order; the
+trailing yield is an input, never the answer. The agent never has to search for
+the historical numbers.
 
 You can run one mode or several in a session; when more than one runs, the
 agent gives a final cross-mode recommendation.
@@ -121,12 +124,28 @@ This feeds `pricing.profit_threshold()` (round-trip + `pricing.profit_margin`
 [`data/dividends.py`](src/stockpredict/data/dividends.py) uses the same
 vnai-quota-bypass technique as OHLCV (`fetcher.py`), but the only source with
 a real, populated dividend-events endpoint on the installed vnstock version
-is **VCI's company-events feed** (`Company(symbol, source="VCI").events()`,
-filtered to `event_code == "DIV"`) — KBS's analogous endpoint returned empty
-for every symbol tried during implementation. Cached to
-`cache/dividends/<SYM>.parquet`. `update-dividends` is separable from
-`update-data` so a dividend-only refresh doesn't require a full OHLCV
-re-fetch.
+is **VCI's company-events feed** (`Company(symbol, source="VCI").events()`)
+— KBS's analogous endpoint returned empty for every symbol tried during
+implementation. Both `DIV` (cash dividend) and `ISS` (issuance) events are
+kept, classified by who receives the new shares: `cash`, `stock` (free to
+existing holders — stock dividend / bonus issue), `rights` (sold to existing
+holders), `placement` (third parties or staff — private placement / ESOP). Only
+cash rows feed the yield; the rest give the dividend mode a deterministic
+**dilution** signal instead of asking the agent to research it. The classifier
+reads `event_title_en` because VCI's ISS payload carries no subscription-price
+field. Legacy cache files predate the split and lump placements into `stock`, so
+their stock-dividend ratio is an upper bound until refetched.
+
+Cached to `cache/dividends/<SYM>.parquet`. `read_dividend_history` normalizes
+every historical on-disk shape onto one canonical schema — the cache outlived
+two rewrites, and an earlier reader rejected any file it didn't recognise,
+which silently made ~148 of 150 cached symbols read as "no dividend history".
+Rows with no ex-date fall back to the announcement date (flagged
+`ex_date_estimated`) rather than being dropped, since most of them are the
+stock/rights events that carry the dilution signal.
+
+`update-dividends` is separable from `update-data` so a dividend-only refresh
+doesn't require a full OHLCV re-fetch.
 
 ## Universe coverage, cache, and `--warm-only`
 
